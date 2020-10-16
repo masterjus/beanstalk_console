@@ -1,4 +1,4 @@
-<div id="modalAddSample" class="modal hide fade" tabindex="-1" role="dialog" aria-labelledby="settings-label" aria-hidden="true">
+<div id="modalAddSample" class="modal fade" tabindex="-1" role="dialog" aria-labelledby="settings-label" aria-hidden="true">
     <div class="modal-dialog">
         <div class="modal-content">
             <div class="modal-header">
@@ -12,7 +12,7 @@
                         <button type="button" class="close" data-dismiss="alert">×</button>
                         <span><strong>Error!</strong> Required fields are marked *</span>
                     </div>
-                    <input type="hidden" name="addsamplestate" id="addsamplestate">
+                    <input type="hidden" name="addsamplejobid" id="addsamplejobid">
 
                     <div class="form-group">
                         <label for="addsamplename"

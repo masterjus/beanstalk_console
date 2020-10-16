@@ -5,30 +5,42 @@
  * @link http://kr.github.com/beanstalkd/
  * @author Petr Trofimov, Sergey Lysenko
  */
-function __autoload($class) {
+function autoload_class($class) {
     require_once str_replace('_', '/', $class) . '.php';
 }
 
+spl_autoload_register('autoload_class');
+
 session_start();
+require_once 'Pheanstalk/ClassLoader.php';
+Pheanstalk_ClassLoader::register(dirname(__FILE__));
+
 require_once 'BeanstalkInterface.class.php';
 require_once dirname(__FILE__) . '/../config.php';
 require_once dirname(__FILE__) . '/../src/Storage.php';
 
-$server = !empty($_GET['server']) ? $_GET['server'] : '';
-$action = !empty($_GET['action']) ? $_GET['action'] : '';
-$state = !empty($_GET['state']) ? $_GET['state'] : '';
-$count = !empty($_GET['count']) ? $_GET['count'] : '';
-$tube = !empty($_GET['tube']) ? $_GET['tube'] : '';
-$tplMain = !empty($_GET['tplMain']) ? $_GET['tplMain'] : '';
-$tplBlock = !empty($_GET['tplBlock']) ? $_GET['tplBlock'] : '';
+$GLOBALS['server'] = !empty($_GET['server']) ? $_GET['server'] : '';
+$GLOBALS['action'] = !empty($_GET['action']) ? $_GET['action'] : '';
+$GLOBALS['state'] = !empty($_GET['state']) ? $_GET['state'] : '';
+$GLOBALS['count'] = !empty($_GET['count']) ? $_GET['count'] : '';
+$GLOBALS['tube'] = !empty($_GET['tube']) ? $_GET['tube'] : '';
+$GLOBALS['tplMain'] = !empty($_GET['tplMain']) ? $_GET['tplMain'] : '';
+$GLOBALS['tplBlock'] = !empty($_GET['tplBlock']) ? $_GET['tplBlock'] : '';
 
 class Console {
 
+    /**
+     * @var BeanstalkInterface
+     */
     public $interface;
     protected $_tplVars = array();
     protected $_globalVar = array();
     protected $_errors = array();
-    private $servers = array();
+    private $serversConfig = array();
+    private $serversEnv = array();
+    private $serversCookie = array();
+    private $searchResults = array();
+    private $actionTimeStart = 0;
 
     public function __construct() {
         $this->__init();
@@ -37,7 +49,22 @@ class Console {
 
     /** @return array */
     public function getServers() {
-        return $this->servers;
+        return array_merge($this->serversConfig, $this->serversEnv, $this->serversCookie);
+    }
+
+    /** @return array */
+    public function getServersConfig() {
+        return $this->serversConfig;
+    }
+
+    /** @return array */
+    public function getServersEnv() {
+        return $this->serversEnv;
+    }
+
+    /** @return array */
+    public function getServersCookie() {
+        return $this->serversCookie;
     }
 
     public function getServerStats($server) {
@@ -178,20 +205,22 @@ class Console {
         }
     }
 
-    protected function __init() {
-        global $server, $action, $state, $count, $tube, $config, $tplMain, $tplBlock;
+    public function getSearchResult() {
+        return $this->searchResults;
+    }
 
+    protected function __init() {
         $this->_globalVar = array(
-            'server' => $server,
-            'action' => $action,
-            'state' => $state,
-            'count' => $count,
-            'tube' => $tube,
-            '_tplMain' => $tplMain,
-            '_tplBlock' => $tplBlock,
-            'config' => $config);
+            'server' => $GLOBALS['server'],
+            'action' => $GLOBALS['action'],
+            'state' => $GLOBALS['state'],
+            'count' => $GLOBALS['count'],
+            'tube' => $GLOBALS['tube'],
+            '_tplMain' => $GLOBALS['tplMain'],
+            '_tplBlock' => $GLOBALS['tplBlock'],
+            'config' => $GLOBALS['config']);
         $this->_tplVars = $this->_globalVar;
-        if (!in_array($this->_tplVars['_tplBlock'], array('allTubes'))) {
+        if (!in_array($this->_tplVars['_tplBlock'], array('allTubes', 'serversList'))) {
             unset($this->_tplVars['_tplBlock']);
         }
         if (!in_array($this->_tplVars['_tplMain'], array('main', 'ajax'))) {
@@ -201,14 +230,21 @@ class Console {
             $this->_tplVars['_tplMain'] = 'main';
         }
 
-        $this->servers = $config['servers'];
+        foreach ($GLOBALS['config']['servers'] as $key => $server) {
+            $this->serversConfig[$key] = $server;
+        }
+        if (false !== getenv('BEANSTALK_SERVERS')) {
+            foreach (explode(',', getenv('BEANSTALK_SERVERS')) as $key => $server) {
+                $this->serversEnv[$key] = $server;
+            }
+        }
         if (isset($_COOKIE['beansServers'])) {
-            foreach (explode(';', $_COOKIE['beansServers']) as $server) {
-                $this->servers[] = $server;
+            foreach (explode(';', $_COOKIE['beansServers']) as $key => $server) {
+                $this->serversCookie[$key] = $server;
             }
         }
         try {
-            $storage = new Storage($config['storage']);
+            $storage = new Storage($GLOBALS['config']['storage']);
         } catch (Exception $ex) {
             $this->_errors[] = $ex->getMessage();
         }
@@ -236,7 +272,37 @@ class Console {
                         $job = $this->interface->_client->useTube($tube)->peekReady();
                         break;
                     case 'delayed':
+                        try {
+                            $ready = $this->interface->_client->useTube($tube)->peekReady();
+                            if ($ready) {
+                                $this->_errors[] = 'Cannot delete Delayed until there are Ready messages on this tube';
+                                return;
+                            }
+                        } catch (Exception $e) {
+                            // there might be no jobs to peek at, and peekReady raises exception in this situation
+                            if (strpos($e->getMessage(), Pheanstalk_Response::RESPONSE_NOT_FOUND) === false) {
+                                throw $e;
+                            }
+                        }
+                        try {
+                            $bury = $this->interface->_client->useTube($tube)->peekBuried();
+                            if ($bury) {
+                                $this->_errors[] = 'Cannot delete Delayed until there are Bury messages on this tube';
+                                return;
+                            }
+                        } catch (Exception $e) {
+                            // there might be no jobs to peek at, and peekReady raises exception in this situation
+                            if (strpos($e->getMessage(), Pheanstalk_Response::RESPONSE_NOT_FOUND) === false) {
+                                throw $e;
+                            }
+                        }
                         $job = $this->interface->_client->useTube($tube)->peekDelayed();
+                        if ($job) {
+                            //when we found job with Delayed, kick all messages, to be ready, so that we can Delete them.
+                            $this->interface->kick($tube, 100000000);
+                            $this->deleteAllFromTube('ready', $tube);
+                            return;
+                        }
                         break;
                     case 'buried':
                         $job = $this->interface->_client->useTube($tube)->peekBuried();
@@ -250,7 +316,10 @@ class Console {
             } while (!empty($job));
         } catch (Exception $e) {
             // there might be no jobs to peek at, and peekReady raises exception in this situation
-            echo $e->getMessage();
+            // skip not found exception
+            if (strpos($e->getMessage(), Pheanstalk_Response::RESPONSE_NOT_FOUND) === false) {
+                $this->_errors[] = $e->getMessage();
+            }
         }
     }
 
@@ -301,7 +370,17 @@ class Console {
     protected function _actionKick() {
         $this->interface->kick($this->_globalVar['tube'], $this->_globalVar['count']);
         header(
-                sprintf('Location: index.php?server=%s&tube=%s', $this->_globalVar['server'], $this->_globalVar['tube']));
+                sprintf('Location: ./?server=%s&tube=%s', $this->_globalVar['server'], urlencode($this->_globalVar['tube'])));
+        exit();
+    }
+
+    protected function _actionKickJob() {
+        $job = $this->interface->_client->peek(intval($_GET['jobid']));
+        if ($job) {
+            $this->interface->_client->kickJob($job);
+        }
+        header(
+                sprintf('Location: ./?server=%s&tube=%s', $this->_globalVar['server'], urlencode($this->_globalVar['tube'])));
         exit();
     }
 
@@ -321,6 +400,14 @@ class Console {
         $this->_postDelete();
     }
 
+    protected function _actionDeleteJob() {
+        $job = $this->interface->_client->peek(intval($_GET['jobid']));
+        if ($job) {
+            $this->interface->_client->delete($job);
+        }
+        $this->_postDelete();
+    }
+
     protected function _postDelete() {
         $arr = $this->getTubeStatValues($this->_globalVar['tube']);
         $availableJobs = $arr['current-jobs-urgent'] + $arr['current-jobs-ready'] + $arr['current-jobs-reserved'] + $arr['current-jobs-delayed'] + $arr['current-jobs-buried'];
@@ -329,7 +416,7 @@ class Console {
             $this->_globalVar['tube'] = null;
         }
         header(
-                sprintf('Location: index.php?server=%s&tube=%s', $this->_globalVar['server'], $this->_globalVar['tube']));
+                sprintf('Location: ./?server=%s&tube=%s', $this->_globalVar['server'], urlencode($this->_globalVar['tube'])));
         exit();
     }
 
@@ -338,19 +425,21 @@ class Console {
             $tube = $this->_globalVar['tube'];
         }
         $this->deleteAllFromTube($this->_globalVar['state'], $tube);
-        $this->_postDelete();
+        if (empty($this->_errors)) {
+            $this->_postDelete();
+        }
     }
 
     protected function _actionServersRemove() {
         $server = $_GET['removeServer'];
-        $this->servers = array_diff($this->servers, array($server));
-        if (count($this->servers)) {
-            setcookie('beansServers', implode(';', $this->servers), time() + 86400 * 365);
+        $cookie_servers = array_diff($this->getServersCookie(), array($server));
+        if (count($cookie_servers)) {
+            setcookie('beansServers', implode(';', $cookie_servers), time() + 86400 * 365);
         } else {
             // no servers, clear cookie
             setcookie('beansServers', '', time() - 86400 * 365);
         }
-        header('Location: index.php');
+        header('Location: ./?');
         exit();
     }
 
@@ -365,8 +454,8 @@ class Console {
 
         $id = $this->interface->addJob($tubeName, $tubeData, $tubePriority, $tubeDelay, $tubeTtr);
 
-        if (!empty($result)) {
-            $result = array('result' => true, 'id' => $result);
+        if (!empty($id)) {
+            $result = array('result' => true, 'id' => $id);
         }
 
         echo json_encode($result);
@@ -401,7 +490,7 @@ class Console {
         }
         $this->interface->pauseTube($this->_globalVar['tube'], $this->_globalVar['count']);
         header(
-                sprintf('Location: index.php?server=%s&tube=%s', $this->_globalVar['server'], $this->_globalVar['tube']));
+                sprintf('Location: ./?server=%s&tube=%s', $this->_globalVar['server'], urlencode($this->_globalVar['tube'])));
         exit();
     }
 
@@ -409,19 +498,9 @@ class Console {
         $success = false;
         $error = '';
         $response = array('result' => &$success, 'error' => &$error);
-        if (isset($_POST['addsamplestate']) && isset($_POST['addsamplename']) && isset($_POST['tube']) && isset($_POST['tubes'])) {
+        if (isset($_POST['addsamplejobid']) && isset($_POST['addsamplename']) && isset($_POST['tube']) && isset($_POST['tubes'])) {
             try {
-                switch ($_POST['addsamplestate']) {
-                    case 'ready':
-                        $job = $this->interface->_client->useTube($_POST['tube'])->peekReady();
-                        break;
-                    case 'delayed':
-                        $job = $this->interface->_client->useTube($_POST['tube'])->peekDelayed();
-                        break;
-                    case 'buried':
-                        $job = $this->interface->_client->useTube($_POST['tube'])->peekBuried();
-                        break;
-                }
+                $job = $this->interface->_client->peek(intval($_POST['addsamplejobid']));
                 if ($job) {
                     $res = $this->_storeSampleJob($_POST, $job->getData());
                     if ($res === true) {
@@ -456,7 +535,7 @@ class Console {
             $_SESSION['info'] = 'Job placed on tube';
             header(sprintf('Location: %s', $_GET['redirect']));
         } else {
-            header(sprintf('Location: index.php?server=%s&tube=%s', $this->_globalVar['server'], $this->_globalVar['tube']));
+            header(sprintf('Location: ./?server=%s&tube=%s', $this->_globalVar['server'], urlencode($this->_globalVar['tube'])));
         }
         exit();
     }
@@ -481,7 +560,7 @@ class Console {
                     $job['tubes'] = $_POST['tubes'];
                     $job['data'] = htmlspecialchars_decode($_POST['jobdata']);
                     if ($storage->saveJob($job)) {
-                        header('Location: index.php?action=manageSamples');
+                        header('Location: ./?action=manageSamples');
                     } else {
                         $storage->saveJob($oldjob);
                         $this->_tplVars['error'] = $storage->getError();
@@ -504,8 +583,8 @@ class Console {
             return;
         }
         $serverTubes = array();
-        if (is_array($this->servers)) {
-            foreach ($this->servers as $server) {
+        if (is_array($this->getServers())) {
+            foreach ($this->getServers() as $server) {
                 try {
                     $interface = new BeanstalkInterface($server);
                     $tubes = $interface->getTubes();
@@ -535,7 +614,7 @@ class Console {
                 $job['tubes'] = $_POST['tubes'];
                 $job['data'] = htmlspecialchars_decode($_POST['jobdata']);
                 if ($storage->saveJob($job)) {
-                    header('Location: index.php?action=manageSamples');
+                    header('Location: ./?action=manageSamples');
                 } else {
                     $this->_tplVars['error'] = $storage->getError();
                 }
@@ -548,8 +627,8 @@ class Console {
         }
 
         $serverTubes = array();
-        if (is_array($this->servers)) {
-            foreach ($this->servers as $server) {
+        if (is_array($this->getServers())) {
+            foreach ($this->getServers() as $server) {
                 try {
                     $interface = new BeanstalkInterface($server);
                     $tubes = $interface->getTubes();
@@ -577,20 +656,107 @@ class Console {
                 $storage->delete($key);
             }
         }
-        header('Location: index.php?action=manageSamples');
+        header('Location: ./?action=manageSamples');
         exit();
     }
 
     protected function _actionMoveJobsTo() {
-        global $server, $tube, $state;
+        $destServer = (isset($_GET['server'])) ? $_GET['server'] : null;
         $destTube = (isset($_GET['destTube'])) ? $_GET['destTube'] : null;
         $destState = (isset($_GET['destState'])) ? $_GET['destState'] : null;
-        if (!empty($destTube) && in_array($state, array('ready', 'delayed', 'buried'))) {
-            $this->moveJobsFromTo($server, $tube, $state, $destTube);
+        if (!empty($destTube) && in_array($GLOBALS['state'], array('ready', 'delayed', 'buried'))) {
+            $this->moveJobsFromTo($destServer, $GLOBALS['tube'], $GLOBALS['state'], $destTube);
         }
         if (!empty($destState)) {
-            $this->moveJobsToState($server, $tube, $state, $destState);
+            $this->moveJobsToState($destServer, $GLOBALS['tube'], $GLOBALS['state'], $destState);
         }
+    }
+
+    protected function _actionSearch() {
+        $this->actionTimeStart = microtime(true);
+        $timelimit_in_seconds = 15;
+        $searchStr = (isset($_GET['searchStr'])) ? $_GET['searchStr'] : null;
+        $states = array('ready', 'delayed', 'buried');
+        $jobList = array();
+        $limit = null;
+
+        if ($searchStr === null or $searchStr === '')
+            return false;
+
+        if (isset($_GET['limit'])) {
+            $limit = intval($_GET['limit']);
+        }
+
+        foreach ($states as $state) {
+            $jobList[$state] = $this->findJobsByState($GLOBALS['tube'], $state, $searchStr, $limit);
+            $jobList['total']+=count($jobList[$state]);
+        }
+
+        $this->searchResults = $jobList;
+    }
+
+    private function findJobsByState($tube, $state, $searchStr, $limit = 25) {
+        $jobList = array();
+        $job = null;
+
+        try {
+            $stats = $this->interface->getServerStats();
+        } catch (Exception $e) {
+            return $jobList;
+        }
+
+        $ready = $stats['current-jobs-ready']['value'];
+        $reserved = $stats['current-jobs-reserved']['value'];
+        $delayed = $stats['current-jobs-delayed']['value'];
+        $buried = $stats['current-jobs-buried']['value'];
+        $deleted = $stats['cmd-delete']['value'];
+
+        try {
+            switch ($state) {
+                case 'ready':
+                    $job = $this->interface->_client->useTube($tube)->peekReady();
+                    break;
+                case 'delayed':
+                    $job = $this->interface->_client->useTube($tube)->peekDelayed();
+                    break;
+                case 'buried':
+                    $job = $this->interface->_client->useTube($tube)->peekBuried();
+                    break;
+            }
+        } catch (Exception $e) {
+            
+        }
+
+        if ($job === null)
+            return $jobList;
+
+        $jobList = array();
+        $lastId = $ready + $reserved + $delayed + $buried + $deleted;
+
+        $added = 0;
+        for ($id = $job->getId(); $id <= $lastId; $id++) {
+            try {
+                /** @var Pheanstalk_Job $job */
+                $job = $this->interface->_client->peek($id);
+                if ($job) {
+                    $jobStats = $this->interface->_client->statsJob($job);
+                    if ($jobStats->tube === $tube &&
+                        $jobStats->state === $state &&
+                        strpos($job->getData(), $searchStr) !== false
+                    ) {
+                        $jobList[$id] = $job;
+                        $added++;
+                    }
+                }
+            } catch (Pheanstalk_Exception_ServerException $e) {
+                
+            }
+            if ($added >= $limit || (microtime(true) - $this->actionTimeStart) > $limit) {
+                break;
+            }
+        }
+
+        return $jobList;
     }
 
     private function _storeSampleJob($post, $jobData) {
@@ -639,7 +805,7 @@ class Console {
         } catch (Exception $e) {
             // there might be no jobs to peek at, and peekReady raises exception in this situation
         }
-        header(sprintf('Location: index.php?server=%s&tube=%s', $server, $destTube));
+        header(sprintf('Location: ./?server=%s&tube=%s', $server, urlencode($destTube)));
     }
 
     private function moveJobsToState($server, $tube, $state, $destState) {
@@ -668,7 +834,7 @@ class Console {
         } catch (Exception $e) {
             // there might be no jobs to peek at, and peekReady raises exception in this situation
         }
-        header(sprintf('Location: index.php?server=%s&tube=%s', $server, $tube));
+        header(sprintf('Location: ./?server=%s&tube=%s', $server, urlencode($tube)));
     }
 
 }

@@ -21,11 +21,13 @@ class Storage implements IStorage {
 
     public function isAvailable() {
         if (!is_file($this->file)) {
-            $this->error = "Please create the storage file, it must be writable: $this->file";
+            if (!touch($this->file)) {
+                $this->error = "Storage file could not be created. Please create the storage file manually, it must be writable: $this->file";
+            }
             return false;
         }
         if (!is_writable($this->file)) {
-            @chmod($this->file, '0755');
+            @chmod($this->file, 0755);
             if (!is_writable($this->file)) {
                 $this->error = "Please make the storage file writable: $this->file";
                 return false;

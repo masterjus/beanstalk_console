@@ -8,7 +8,8 @@
 
 **Features**
 
-- Common list of servers in config for all users
+- Common list of servers in config for all users + optional Basic Auth
+- Global server list can be set via BEANSTALK_SERVERS environment variable
 - Each user can add its own personal Beanstalkd server
 - Full list of available tubes
 - Complete statistics about jobs in tubes
@@ -19,6 +20,7 @@
 - You can move jobs between tubes
 - Ability to Pause tubes
 - Saved jobs (store sample jobs as a template, kick/edit them, very useful for development)
+- Search jobs data field
 - Customizable UI (code highlighter, choose columns, edit auto refresh seconds, pause tube seconds)
 
 Change log on [Releases](https://github.com/ptrofimov/beanstalk_console/releases).
@@ -47,8 +49,30 @@ After provision beanstalk console will be available at [http://localhost:7654](h
 
 ### Download an Archive File
 
-[Download](https://github.com/ptrofimov/beanstalk_console/archive/master.zip), unzip files to your *wwww* directory and launch from *public* directory, enjoy!
+[Download](https://github.com/ptrofimov/beanstalk_console/archive/master.zip), unzip files to your *www* directory and launch from *public* directory, enjoy!
 
+### Run as a Docker container
+
+Install [Docker](https://docs.docker.com/installation/) then build and run with the following command (from project root):
+
+    docker build --rm -t beanstalk_console .
+    docker run -d -p "80:80" --name beanstalk_console beanstalk_console
+
+If you would rather just run the existing automated build of this project, run (from project root):
+
+    docker run -d -p "80:80" -e APACHE_PORT=80 --name beanstalk_console agaveapi/beanstalkd-console
+
+To configure webapp with a custom beanstalk server to load at runtime, set the `BEANSTALKD_HOST` and `BEANSTALKD_PORT` environment variables.
+
+    docker run -d -p 80:80 \
+               --name beanstalk_console \
+               -e 'BEANSTALKD_HOST=beanstalkd' \
+               -e 'BEANSTALKD_PORT=11300' \
+               beanstalk_console
+
+To spin up a console with a beanstalkd server all at once, install [Docker Compose](https://docs.docker.com/compose/) and run (from project root):
+
+    docker-compose up
 
 **Authors:** Petr Trofimov, Sergey Lysenko, Pentium10
 
@@ -61,6 +85,7 @@ After provision beanstalk console will be available at [http://localhost:7654](h
 **Возможности**
 
 - Общий список серверов в конфиге для всех пользователей
+- Глобальный список серверов может быть установлен через переменную окружения BEANSTALK_SERVERS
 - Каждый пользователь может добавить свой персональный сервер
 - Полный список доступных труб
 - Полная статистика тасков в трубах

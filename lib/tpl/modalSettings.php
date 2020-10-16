@@ -26,9 +26,33 @@
                         else
                             echo @intval($_COOKIE['autoRefreshTimeoutMs']);
                         ?>">
+                        <div class="checkbox">
+                            <label>
+                                <input type="checkbox" id="isEnabledAutoRefreshLoad" value="0"
+                                       <?php if (@$_COOKIE['isEnabledAutoRefreshLoad'] == 1) { ?>checked="checked"<?php } ?>>
+                                auto-refresh on load
+                            </label>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label for="focusedInput"><b>Search result limits</b> (Default: <i>25</i>)</label>
+                        <input class="form-control focused" id="searchResultLimit" type="text" value="<?php
+                        if (@empty($_COOKIE['searchResultLimit']))
+                            echo 25;
+                        else
+                            echo @intval($_COOKIE['searchResultLimit']);
+                        ?>">
                     </div>
                     <div class="form-group">
                         <label for="focusedInput"><b>Preferred way to deal with job data</b></label>
+
+                        <div class="checkbox">
+                            <label>
+                                <input type="checkbox" id="isDisabledJsonDecode" value="1"
+                                       <?php if (@$_COOKIE['isDisabledJsonDecode'] != 1) { ?>checked="checked"<?php } ?>>
+                                before display: json_decode()
+                            </label>
+                        </div>
 
                         <div class="checkbox">
                             <label>
@@ -40,9 +64,9 @@
 
                         <div class="checkbox">
                             <label>
-                                <input type="checkbox" id="isDisabledJsonDecode" value="1"
-                                       <?php if (@$_COOKIE['isDisabledJsonDecode'] != 1) { ?>checked="checked"<?php } ?>>
-                                before display: json_decode()
+                                <input type="checkbox" id="isEnabledBase64Decode" value="1"
+                                       <?php if (@$_COOKIE['isEnabledBase64Decode'] == 1) { ?>checked="checked"<?php } ?>>
+                                before display: base64_decode()
                             </label>
                         </div>
 
